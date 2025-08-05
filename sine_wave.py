@@ -170,10 +170,9 @@ def save_camera_data(camera: Camera, camera_name: str, sim_time: float):
         print(f"RGB Image Shape: {rgb_data.shape}")
         print(f"RGB Image Range: [{rgb_data.min():.3f}, {rgb_data.max():.3f}]")
         
-        # Optional: Save image to file (uncomment if needed)
-        # import cv2
-        # rgb_uint8 = (rgb_data * 255).astype(np.uint8)
-        # cv2.imwrite(f"{camera_name}_t{sim_time:.2f}.png", cv2.cvtColor(rgb_uint8, cv2.COLOR_RGB2BGR))
+        import cv2
+        rgb_uint8 = (rgb_data * 255).astype(np.uint8)
+        cv2.imwrite(f"{camera_name}_t{sim_time:.2f}.png", cv2.cvtColor(rgb_uint8, cv2.COLOR_RGB2BGR))
 
 
 def run_simulator(sim: sim_utils.SimulationContext, entities: dict[str, object]):
