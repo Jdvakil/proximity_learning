@@ -262,14 +262,22 @@ def main():
     camera1 = scene_entities["camera1"]
     camera2 = scene_entities["camera2"]
     
-    # Set poses using tensors (Isaac Lab expects tensors)
-    camera1_pos = torch.tensor([[2.0, 0.0, 1.5]], device=sim.device)
-    camera1_ori = torch.tensor([[0.0, 0.0, 0.0, 1.0]], device=sim.device)
+    # Robot is positioned at (0.0, 0.0, 1.05) + some height for the arm
+    robot_pos = torch.tensor([0.0, 0.0, 1.5])  # Approximate robot center height
+    
+    # Camera 1: Side view - positioned to the side, looking at robot
+    camera1_pos = torch.tensor([[0, 1.3, 1.8]], device=sim.device)  # Side and slightly elevated
+    # Calculate orientation to look at robot (approximate)
+    # Looking from camera position toward robot position
+    # For side view: rotate around Z axis to face robot, tilt down slightly
+    camera1_ori = torch.tensor([[0.0998, -0.5693, 0.8130, 0.0699]], device=sim.device)  # Face robot with slight downward tilt
     camera1.set_world_poses(camera1_pos, camera1_ori)
     
-    # Camera 2: Top-down view (90 degrees rotation around X axis to look down)
-    camera2_pos = torch.tensor([[0.0, 0.0, 3.0]], device=sim.device)
-    camera2_ori = torch.tensor([[0.7071, 0.0, 0.0, 0.7071]], device=sim.device)
+    # Camera 2: Angled top view - positioned above and in front, looking down at robot
+    camera2_pos = torch.tensor([[1.5, 0.0, 2.8]], device=sim.device)  # Above and slightly in front
+    # Orientation to look down at robot from an angle
+    # Combine rotation around X (look down) and Y (angle toward robot)
+    camera2_ori = torch.tensor([[0.5, -0.5, 0.5, 0.5]], device=sim.device)  # Angled downward view
     camera2.set_world_poses(camera2_pos, camera2_ori)
     
     print("[INFO]: Setup complete...")
@@ -279,7 +287,6 @@ def main():
     
     # Run the simulator
     run_simulator(sim, scene_entities)
-
 
 if __name__ == "__main__":
     # Run the main function
