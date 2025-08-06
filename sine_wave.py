@@ -70,34 +70,44 @@ def design_scene() -> tuple[dict, dict]:
     franka_arm_cfg.init_state.pos = (0.0, 0.0, 1.05)
     franka_panda = Articulation(cfg=franka_arm_cfg)
 
-    # Camera 1 - Side view
+    # Camera 1 - Wrist camera (mounted on robot hand)
     camera1_cfg = CameraCfg(
-        prim_path="/World/Camera1",
+        prim_path="/World/Origin1/Robot/panda_hand/wrist_cam",
         update_period=0.1,  # 10 FPS
         height=480,
         width=640,
-        data_types=["rgb"],
+        data_types=["rgb", "distance_to_image_plane"],
         spawn=sim_utils.PinholeCameraCfg(
             focal_length=24.0, 
             focus_distance=400.0, 
             horizontal_aperture=20.955, 
-            clipping_range=(0.1, 20.0)
+            clipping_range=(0.1, 2.0)
+        ),
+        offset=CameraCfg.OffsetCfg(
+            pos=(0.13, 0.0, -0.15), 
+            rot=(-0.70614, 0.03701, 0.03701, -0.70614), 
+            convention="ros"
         ),
     )
     camera1 = Camera(cfg=camera1_cfg)
 
-    # Camera 2 - Top view  
+    # Camera 2 - Table view camera (external fixed camera)
     camera2_cfg = CameraCfg(
-        prim_path="/World/Camera2",
+        prim_path="/World/table_cam",
         update_period=0.1,  # 10 FPS
         height=480,
         width=640,
-        data_types=["rgb"],
+        data_types=["rgb", "distance_to_image_plane"],
         spawn=sim_utils.PinholeCameraCfg(
             focal_length=24.0, 
             focus_distance=400.0, 
             horizontal_aperture=20.955, 
-            clipping_range=(0.1, 20.0)
+            clipping_range=(0.1, 2.0)
+        ),
+        offset=CameraCfg.OffsetCfg(
+            pos=(1.0, 0.0, 1.4), 
+            rot=(0.35355, -0.61237, -0.61237, 0.35355), 
+            convention="ros"
         ),
     )
     camera2 = Camera(cfg=camera2_cfg)
@@ -163,16 +173,28 @@ def print_robot_data(robot: Articulation, sim_time: float):
 
 
 def save_camera_data(camera: Camera, camera_name: str, sim_time: float):
-    """Save camera RGB data."""
-    if camera.data.output is not None and "rgb" in camera.data.output:
-        rgb_data = camera.data.output["rgb"][0].cpu().numpy()  # Get first environment
-        print(f"--- {camera_name} Data at t={sim_time:.2f}s ---")
-        print(f"RGB Image Shape: {rgb_data.shape}")
-        print(f"RGB Image Range: [{rgb_data.min():.3f}, {rgb_data.max():.3f}]")
+    """Save camera RGB and depth data."""
+    if camera.data.output is not None:
+        if "rgb" in camera.data.output:
+            rgb_data = camera.data.output["rgb"][0].cpu().numpy()  # Get first environment
+            print(f"--- {camera_name} RGB Data at t={sim_time:.2f}s ---")
+            print(f"RGB Image Shape: {rgb_data.shape}")
+            print(f"RGB Image Range: [{rgb_data.min():.3f}, {rgb_data.max():.3f}]")
         
+        if "distance_to_image_plane" in camera.data.output:
+            depth_data = camera.data.output["distance_to_image_plane"][0].cpu().numpy()
+            print(f"--- {camera_name} Depth Data at t={sim_time:.2f}s ---")
+            print(f"Depth Image Shape: {depth_data.shape}")
+            print(f"Depth Range: [{depth_data.min():.3f}, {depth_data.max():.3f}] meters")
+        
+        # Optional: Save images to file (uncomment if needed)
         import cv2
-        rgb_uint8 = (rgb_data * 255).astype(np.uint8)
-        cv2.imwrite(f"{camera_name}_t{sim_time:.2f}.png", cv2.cvtColor(rgb_uint8, cv2.COLOR_RGB2BGR))
+        if "rgb" in camera.data.output:
+            rgb_uint8 = (rgb_data * 255).astype(np.uint8)
+            cv2.imwrite(f"{camera_name}_rgb_t{sim_time:.2f}.png", cv2.cvtColor(rgb_uint8, cv2.COLOR_RGB2BGR))
+        if "distance_to_image_plane" in camera.data.output:
+            depth_normalized = (depth_data / depth_data.max() * 255).astype(np.uint8)
+            cv2.imwrite(f"{camera_name}_depth_t{sim_time:.2f}.png", depth_normalized)
 
 
 def run_simulator(sim: sim_utils.SimulationContext, entities: dict[str, object]):
@@ -227,8 +249,8 @@ def run_simulator(sim: sim_utils.SimulationContext, entities: dict[str, object])
             print_robot_data(robot, sim_time)
             
             # Save camera data
-            save_camera_data(camera1, "Camera1_Side", sim_time)
-            save_camera_data(camera2, "Camera2_Top", sim_time)
+            save_camera_data(camera1, "WristCam", sim_time)
+            save_camera_data(camera2, "TableCam", sim_time)
             
             print("-" * 60)
         
@@ -257,28 +279,9 @@ def main():
     # Play the simulator
     sim.reset()
     
-    # Set camera poses after simulation reset
-    # Camera 1: Side view
+    # Cameras are now configured with offsets, no need to manually set poses
     camera1 = scene_entities["camera1"]
     camera2 = scene_entities["camera2"]
-    
-    # Robot is positioned at (0.0, 0.0, 1.05) + some height for the arm
-    robot_pos = torch.tensor([0.0, 0.0, 1.5])  # Approximate robot center height
-    
-    # Camera 1: Side view - positioned to the side, looking at robot
-    camera1_pos = torch.tensor([[0, 1.3, 1.8]], device=sim.device)  # Side and slightly elevated
-    # Calculate orientation to look at robot (approximate)
-    # Looking from camera position toward robot position
-    # For side view: rotate around Z axis to face robot, tilt down slightly
-    camera1_ori = torch.tensor([[0.0998, -0.5693, 0.8130, 0.0699]], device=sim.device)  # Face robot with slight downward tilt
-    camera1.set_world_poses(camera1_pos, camera1_ori)
-    
-    # Camera 2: Angled top view - positioned above and in front, looking down at robot
-    camera2_pos = torch.tensor([[1.5, 0.0, 2.8]], device=sim.device)  # Above and slightly in front
-    # Orientation to look down at robot from an angle
-    # Combine rotation around X (look down) and Y (angle toward robot)
-    camera2_ori = torch.tensor([[0.5, -0.5, 0.5, 0.5]], device=sim.device)  # Angled downward view
-    camera2.set_world_poses(camera2_pos, camera2_ori)
     
     print("[INFO]: Setup complete...")
     print("[INFO]: Franka robot will move in sinusoidal motion")
@@ -287,6 +290,7 @@ def main():
     
     # Run the simulator
     run_simulator(sim, scene_entities)
+
 
 if __name__ == "__main__":
     # Run the main function
