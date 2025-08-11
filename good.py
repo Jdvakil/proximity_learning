@@ -1,611 +1,396 @@
 #!/usr/bin/env python3
+
+# Copyright (c) 2022-2025, The Isaac Lab Project Developers.
+# All rights reserved.
+#
+# SPDX-License-Identifier: BSD-3-Clause
+
 """
-Franka Robot Raycast Visualization with MuJoCo Viewer
-Enhanced version with both matplotlib visualization and MuJoCo physics simulation
+This script demonstrates a Franka robot moving in sinusoidal motion with camera data capture
+and a randomly placed sphere on the table.
+
+.. code-block:: bash
+
+    # Usage
+    ./isaaclab.sh -p scripts/demos/franka_sinusoidal_cameras.py
+
 """
 
-import numpy as np
-import matplotlib.pyplot as plt
-from matplotlib.animation import FuncAnimation
-import time
+"""Launch Isaac Sim Simulator first."""
+
+import argparse
 import math
-import threading
-import xml.etree.ElementTree as ET
+import numpy as np
+import torch
+import random
 
-# Try to import MuJoCo
-try:
-    import mujoco
-    import mujoco.viewer
-    MUJOCO_AVAILABLE = True
-    print("✓ MuJoCo available")
-except ImportError:
-    MUJOCO_AVAILABLE = False
-    print("✗ MuJoCo not available - will run matplotlib only")
+from isaaclab.app import AppLauncher
 
-class FrankaRaycastWithMuJoCo:
-    def __init__(self):
-        """Initialize the Franka robot with MuJoCo and matplotlib visualization."""
-        print("Initializing Franka Raycast Visualization with MuJoCo...")
-        
-        # Robot parameters
-        self.joint_names = [
-            'joint1', 'joint2', 'joint3', 'joint4',
-            'joint5', 'joint6', 'joint7'
-        ]
-        
-        # Current joint angles
-        self.joint_angles = np.array([0.0, -0.5, 0.0, -2.0, 0.0, 1.5, 0.7])
-        self.target_angles = self.joint_angles.copy()
-        
-        # Raycasting parameters
-        self.raycast_distance = 2.0
-        self.num_rays_per_joint = 64
-        
-        # Colors for joints
-        self.joint_colors = [
-            'red', 'green', 'blue', 'yellow', 
-            'magenta', 'cyan', 'orange'
-        ]
-        
-        # Obstacles for matplotlib version
-        self.obstacles = [
-            {'center': np.array([1.0, 0.5, 0.5]), 'radius': 0.2, 'color': 'gray'},
-            {'center': np.array([-0.5, 1.0, 0.3]), 'radius': 0.15, 'color': 'brown'},
-            {'center': np.array([0.8, -0.8, 0.4]), 'radius': 0.25, 'color': 'purple'},
-            {'center': np.array([0.2, 0.8, 0.8]), 'radius': 0.18, 'color': 'olive'},
-        ]
-        
-        # Initialize MuJoCo if available
-        self.mujoco_initialized = False
-        if MUJOCO_AVAILABLE:
-            self.setup_mujoco()
-        
-        # Initialize matplotlib
-        self.setup_matplotlib()
-        
-        # Threading for MuJoCo viewer
-        self.mujoco_thread = None
-        self.running = True
-        
-    def create_mujoco_xml(self):
-        """Create a MuJoCo XML model for the Franka robot."""
-        xml_content = """
-                <mujoco model="franka_raycast_integrated">
-            <compiler angle="radian" meshdir="./robohive/robohive/simhive/franka_sim" texturedir="./robohive/robohive/simhive/franka_sim"/>
+# add argparse arguments
+parser = argparse.ArgumentParser(description="Franka robot sinusoidal motion with camera data capture.")
+# append AppLauncher cli args
+AppLauncher.add_app_launcher_args(parser)
+# parse the arguments
+args_cli = parser.parse_args()
 
-            <size njmax='1000' nconmax='1000'/>
+# launch omniverse app
+app_launcher = AppLauncher(args_cli)
+simulation_app = app_launcher.app
 
-            <!-- <include file="./robohive/robohive/simhive/scene_sim/topfloor_scene.xml"/> -->
-            <include file="./robohive/robohive/simhive/franka_sim/assets/assets.xml"/>
-            <!-- <include file="./robohive/robohive/simhive/furniture_sim/simpleTable/simpleTable_asset.xml"/> -->
-            <include file="./robohive/robohive/simhive/franka_sim/assets/actuator0.xml"/>
-            <include file="./robohive/robohive/simhive/franka_sim/assets/gripper_assets.xml"/>
-            <include file="./robohive/robohive/simhive/franka_sim/assets/gripper_actuator0.xml"/>
-            
-            <option timestep="0.01" gravity="0 0 -9.81"/>
-            
-            <asset>
-                <texture name="grid" type="2d" builtin="checker" rgb1=".1 .2 .3" 
-                        rgb2=".2 .3 .4" width="300" height="300"/>
-                <material name="grid" texture="grid" texrepeat="8 8" reflectance=".2"/>
-                <material name="robot" rgba="0.7 0.7 0.7 1"/>
-                <material name="obstacle" rgba="0.8 0.2 0.2 0.7"/>
-                <material name="franka_white" rgba="1 1 1 1"/>
-                <material name="franka_black" rgba="0.1 0.1 0.1 1"/>
-            </asset>
-            
-            <worldbody>
-                <light pos="0 0 3" dir="0 0 -1"/>
-                <geom name="floor" size="3 3 0.1" type="plane" material="grid"/>
-                
-                <!-- Franka Robot (based on RoboPen structure) -->
-                <body pos='0 0 0' euler='0 0 1.57'>
-                    <!-- <geom type='cylinder' size='.120 .4' pos='-.04 0 -.4'/> -->
-                    <include file="./robohive/robohive/simhive/franka_sim/assets/chain0.xml"/>
-                </body>
-                
-                <!-- Camera positions (from RoboPen) -->
-                <camera name='left_cam' pos='-0.5 1.2 1.8' quat='-0.32 -0.22 0.49 0.78'/>
-                <camera name='right_cam' pos='-0.5 -1.2 1.8' quat='0.76 0.5 -0.21 -0.35'/>
-                <camera name='top_cam' pos='0.5 0 2.2' euler='0 0 -1.57'/>
-                
-                <!-- Workspace site -->
-                <site name='workspace' type='box' size='.375 .6 .25' pos='0.475 0 1.0' group='3' rgba='0 0 1 0.3'/>
-                
-                <!-- End effector target -->
-                <site name='ee_target' type='box' size='.03 .07 .04' pos='0.4 0 1' group='1' rgba='0 1 .4 0.5' euler="0 3.14 3.14"/>
-                
-                <!-- Obstacles -->
-                <body name="obstacle1" pos="1.0 0.5 0.5">
-                    <geom name="obs1" type="sphere" size="0.2" material="obstacle"/>
-                </body>
-                <body name="obstacle2" pos="-0.5 1.0 0.3">
-                    <geom name="obs2" type="sphere" size="0.15" material="obstacle"/>
-                </body>
-                <body name="obstacle3" pos="0.8 -0.8 0.4">
-                    <geom name="obs3" type="sphere" size="0.25" material="obstacle"/>
-                </body>
-                <body name="obstacle4" pos="0.2 0.8 0.8">
-                    <geom name="obs4" type="sphere" size="0.18" material="obstacle"/>
-                </body>
-            </worldbody>
-            
-        </mujoco>
-        """
-        return xml_content
+"""Rest everything follows."""
+
+import isaacsim.core.utils.prims as prim_utils
+
+import isaaclab.sim as sim_utils
+from isaaclab.assets import Articulation, RigidObject, RigidObjectCfg
+from isaaclab.sensors import Camera, CameraCfg
+from isaaclab.utils.assets import ISAAC_NUCLEUS_DIR
+
+# Import Franka configuration
+from isaaclab_assets import FRANKA_PANDA_CFG
+
+
+def generate_random_sphere_position(table_center, table_size=(0.8, 0.8), sphere_radius=0.05):
+    """
+    Generate a random position for a sphere on the table surface.
     
-    def setup_mujoco(self):
-        """Setup MuJoCo simulation."""
-        try:
-            # Create XML model
-            xml_content = self.create_mujoco_xml()
-            
-            # Load model
-            self.model = mujoco.MjModel.from_xml_string(xml_content)
-            self.data = mujoco.MjData(self.model)
-            
-            # Set initial joint positions
-            for i, angle in enumerate(self.joint_angles):
-                if i < len(self.data.qpos):
-                    self.data.qpos[i] = angle
-            
-            # Forward kinematics
-            mujoco.mj_forward(self.model, self.data)
-            
-            print("✓ MuJoCo model loaded successfully")
-            self.mujoco_initialized = True
-            
-        except Exception as e:
-            print(f"✗ MuJoCo setup failed: {e}")
-            self.mujoco_initialized = False
+    Args:
+        table_center: (x, y, z) position of table center
+        table_size: (width, depth) of table surface 
+        sphere_radius: radius of sphere to ensure it stays on table
+        
+    Returns:
+        (x, y, z) position for sphere
+    """
+    # Table dimensions (assuming standard table size)
+    table_x, table_y, table_z = table_center
+    table_width, table_depth = table_size
     
-    def setup_matplotlib(self):
-        """Setup matplotlib visualization."""
-        self.fig = plt.figure(figsize=(16, 12))
-        self.ax_3d = self.fig.add_subplot(221, projection='3d')
-        self.ax_distances = self.fig.add_subplot(222)
-        self.ax_top = self.fig.add_subplot(223)
-        self.ax_side = self.fig.add_subplot(224)
-        
-        self.setup_plots()
+    # Generate random x, y within table bounds (with margin for sphere radius)
+    margin = sphere_radius + 0.05  # Small additional margin
+    random_x = table_x + random.uniform(-table_width/2 + margin, table_width/2 - margin)
+    random_y = table_y + random.uniform(-table_depth/2 + margin, table_depth/2 - margin)
     
-    def setup_plots(self):
-        """Setup all matplotlib plots."""
-        # 3D plot
-        self.ax_3d.set_xlabel('X (m)')
-        self.ax_3d.set_ylabel('Y (m)')
-        self.ax_3d.set_zlabel('Z (m)')
-        self.ax_3d.set_title('3D Robot with Raycast Visualization')
-        self.ax_3d.set_xlim([-1.5, 1.5])
-        self.ax_3d.set_ylim([-1.5, 1.5])
-        self.ax_3d.set_zlim([0, 1.5])
-        
-        # Distance plot
-        self.ax_distances.set_xlabel('Joint Number')
-        self.ax_distances.set_ylabel('Distance to Nearest Obstacle (m)')
-        self.ax_distances.set_title('Raycast Distances by Joint')
-        self.ax_distances.set_ylim([0, self.raycast_distance])
-        
-        # Top view
-        self.ax_top.set_xlabel('X (m)')
-        self.ax_top.set_ylabel('Y (m)')
-        self.ax_top.set_title('Top View - XY Plane')
-        self.ax_top.set_xlim([-1.5, 1.5])
-        self.ax_top.set_ylim([-1.5, 1.5])
-        self.ax_top.set_aspect('equal')
-        
-        # Side view
-        self.ax_side.set_xlabel('X (m)')
-        self.ax_side.set_ylabel('Z (m)')
-        self.ax_side.set_title('Side View - XZ Plane')
-        self.ax_side.set_xlim([-1.5, 1.5])
-        self.ax_side.set_ylim([0, 1.5])
-        self.ax_side.set_aspect('equal')
+    # Place sphere on table surface (table_z is table center, add half table height + sphere radius)
+    sphere_z = table_z + 0.02 + sphere_radius  # 0.02 is approximate table half-height
     
-    def get_mujoco_joint_positions(self):
-        """Get joint positions from MuJoCo simulation."""
-        if not self.mujoco_initialized:
-            return self.forward_kinematics_simple(self.joint_angles)
-        
-        positions = []
-        
-        # Get positions of all bodies
-        body_names = ['base', 'link1', 'link2', 'link3', 'link4', 'link5', 'link6', 'end_effector']
-        
-        for body_name in body_names:
-            try:
-                body_id = mujoco.mj_name2id(self.model, mujoco.mjtObj.mjOBJ_BODY, body_name)
-                if body_id >= 0:
-                    pos = self.data.xpos[body_id].copy()
-                    positions.append(pos)
-            except:
-                # If body not found, use simple kinematics
-                pass
-        
-        if len(positions) < 8:
-            return self.forward_kinematics_simple(self.joint_angles)
-        
-        return np.array(positions)
+    return (random_x, random_y, sphere_z)
+
+
+def design_scene() -> tuple[dict, dict]:
+    """Designs the scene with Franka robot, cameras, and a random sphere."""
+    # Ground-plane
+    cfg = sim_utils.GroundPlaneCfg()
+    cfg.func("/World/defaultGroundPlane", cfg)
     
-    def forward_kinematics_simple(self, joint_angles):
-        """Simple forward kinematics for fallback."""
-        positions = []
-        current_pos = np.array([0.0, 0.0, 0.1])
-        current_rot = np.eye(3)
-        
-        link_lengths = [0.333, 0.0, 0.316, 0.0, 0.384, 0.0, 0.107]
-        
-        positions.append(current_pos.copy())
-        
-        for i, (angle, length) in enumerate(zip(joint_angles, link_lengths)):
-            if i == 0:  # Base rotation
-                current_rot = np.array([
-                    [np.cos(angle), -np.sin(angle), 0],
-                    [np.sin(angle), np.cos(angle), 0],
-                    [0, 0, 1]
-                ])
-                current_pos += np.array([0, 0, length])
-            elif i == 1:  # Shoulder pitch
-                rot_y = np.array([
-                    [np.cos(angle), 0, np.sin(angle)],
-                    [0, 1, 0],
-                    [-np.sin(angle), 0, np.cos(angle)]
-                ])
-                current_rot = current_rot @ rot_y
-                current_pos += current_rot @ np.array([0, 0, length])
-            elif i == 2:  # Elbow
-                rot_y = np.array([
-                    [np.cos(angle), 0, np.sin(angle)],
-                    [0, 1, 0],
-                    [-np.sin(angle), 0, np.cos(angle)]
-                ])
-                current_rot = current_rot @ rot_y
-                current_pos += current_rot @ np.array([length, 0, 0])
-            else:  # Other joints
-                if i % 2 == 0:
-                    rot_y = np.array([
-                        [np.cos(angle), 0, np.sin(angle)],
-                        [0, 1, 0],
-                        [-np.sin(angle), 0, np.cos(angle)]
-                    ])
-                    current_rot = current_rot @ rot_y
-                else:
-                    rot_z = np.array([
-                        [np.cos(angle), -np.sin(angle), 0],
-                        [np.sin(angle), np.cos(angle), 0],
-                        [0, 0, 1]
-                    ])
-                    current_rot = current_rot @ rot_z
-                current_pos += current_rot @ np.array([length, 0, 0])
-            
-            positions.append(current_pos.copy())
-        
-        return np.array(positions)
+    # Lights
+    cfg = sim_utils.DomeLightCfg(intensity=2000.0, color=(0.75, 0.75, 0.75))
+    cfg.func("/World/Light", cfg)
+
+    # Create origin for robot
+    prim_utils.create_prim("/World/Origin1", "Xform", translation=[0.0, 0.0, 0.0])
     
-    def get_joint_directions(self, joint_pos):
-        """Get multiple raycast directions from a joint position."""
-        directions = []
-        
-        for i in range(self.num_rays_per_joint):
-            angle = 2 * np.pi * i / self.num_rays_per_joint
-            
-            x_dir = np.cos(angle)
-            y_dir = np.sin(angle)
-            z_dir = 0.1 * np.sin(2 * angle)
-            
-            direction = np.array([x_dir, y_dir, z_dir])
-            direction = direction / np.linalg.norm(direction)
-            directions.append(direction)
-            
-        return directions
+    # Table
+    table_position = (0.55, 0.0, 1.05)
+    cfg = sim_utils.UsdFileCfg(usd_path=f"{ISAAC_NUCLEUS_DIR}/Props/Mounts/SeattleLabTable/table_instanceable.usd")
+    cfg.func("/World/Origin1/Table", cfg, translation=table_position)
     
-    def perform_raycast_mujoco(self, start_pos, direction, max_distance):
-        """Perform raycast using MuJoCo if available."""
-        if not self.mujoco_initialized:
-            return self.perform_raycast_simple(start_pos, direction, max_distance)
-        
-        end_pos = start_pos + direction * max_distance
-        
-        try:
-            # MuJoCo raycast
-            geom_id = mujoco.mj_ray(self.model, self.data, start_pos, direction, 
-                                   None, 1, -1, 0)
-            
-            if geom_id >= 0:
-                # Get intersection point
-                intersection = self.data.contact[0].pos if self.data.ncon > 0 else end_pos
-                distance = np.linalg.norm(intersection - start_pos)
-                return intersection, distance, geom_id
-            else:
-                return end_pos, max_distance, -1
-                
-        except Exception as e:
-            # Fallback to simple raycast
-            return self.perform_raycast_simple(start_pos, direction, max_distance)
+    # Generate random sphere position on table
+    sphere_position = generate_random_sphere_position(table_position)
+    print(f"[INFO]: Placing sphere at position: {sphere_position}")
     
-    def perform_raycast_simple(self, start_pos, direction, max_distance):
-        """Simple raycast for fallback."""
-        min_distance = max_distance
-        hit_obstacle = None
-        
-        for obstacle in self.obstacles:
-            to_obstacle = obstacle['center'] - start_pos
-            proj_length = np.dot(to_obstacle, direction)
-            
-            if proj_length > 0:
-                closest_point = start_pos + direction * proj_length
-                distance_to_ray = np.linalg.norm(obstacle['center'] - closest_point)
-                
-                if distance_to_ray <= obstacle['radius']:
-                    intersection_dist = proj_length - np.sqrt(
-                        obstacle['radius']**2 - distance_to_ray**2
-                    )
-                    
-                    if intersection_dist > 0 and intersection_dist < min_distance:
-                        min_distance = intersection_dist
-                        hit_obstacle = obstacle
-        
-        hit_pos = start_pos + direction * min_distance
-        return hit_pos, min_distance, hit_obstacle
+    # Create sphere as fixed obstacle (no physics, static collision)
+    sphere_cfg = RigidObjectCfg(
+        prim_path="/World/Origin1/Sphere",
+        spawn=sim_utils.SphereCfg(
+            radius=0.05,
+            rigid_props=sim_utils.RigidBodyPropertiesCfg(
+                kinematic_enabled=True,  # Make it kinematic (not affected by forces)
+                disable_gravity=True,    # Disable gravity
+                solver_position_iteration_count=0,
+                solver_velocity_iteration_count=0,
+                max_angular_velocity=0.0,
+                max_linear_velocity=0.0,
+                max_depenetration_velocity=0.0,
+            ),
+            mass_props=sim_utils.MassPropertiesCfg(mass=1.0),  # Mass doesn't matter for kinematic
+            collision_props=sim_utils.CollisionPropertiesCfg(
+                collision_enabled=True,  # Enable collision detection
+            ),
+            visual_material=sim_utils.PreviewSurfaceCfg(
+                diffuse_color=(1.0, 0.0, 0.0),  # Red sphere for visibility
+                metallic=0.2,
+                roughness=0.5,
+            ),
+        ),
+        init_state=RigidObjectCfg.InitialStateCfg(
+            pos=sphere_position,
+            rot=(1.0, 0.0, 0.0, 0.0),  # No rotation
+        ),
+    )
+    sphere = RigidObject(cfg=sphere_cfg)
     
-    def calculate_raycast_results(self, joint_positions):
-        """Calculate raycast results for all joints."""
-        results = []
-        
-        for i, joint_pos in enumerate(joint_positions[1:]):
-            directions = self.get_joint_directions(joint_pos)
-            
-            min_distance = float('inf')
-            closest_hit_pos = None
-            hit_obstacle = None
-            
-            for direction in directions:
-                if self.mujoco_initialized:
-                    hit_pos, distance, geom_id = self.perform_raycast_mujoco(
-                        joint_pos, direction, self.raycast_distance
-                    )
-                else:
-                    hit_pos, distance, obstacle = self.perform_raycast_simple(
-                        joint_pos, direction, self.raycast_distance
-                    )
-                
-                if distance < min_distance:
-                    min_distance = distance
-                    closest_hit_pos = hit_pos
-                    hit_obstacle = obstacle if not self.mujoco_initialized else geom_id
-            
-            results.append({
-                'joint_id': i,
-                'joint_pos': joint_pos,
-                'hit_pos': closest_hit_pos,
-                'distance': min_distance if min_distance < self.raycast_distance else self.raycast_distance,
-                'hit_obstacle': hit_obstacle,
-                'color': self.joint_colors[i % len(self.joint_colors)]
-            })
-        
-        return results
+    # Franka Robot
+    franka_arm_cfg = FRANKA_PANDA_CFG.replace(prim_path="/World/Origin1/Robot")
+    franka_arm_cfg.init_state.pos = (0.0, 0.0, 1.05)
+    franka_panda = Articulation(cfg=franka_arm_cfg)
+
+    # Camera 1 - Wrist camera (mounted on robot hand)
+    camera1_cfg = CameraCfg(
+        prim_path="/World/Origin1/Robot/panda_hand/wrist_cam",
+        update_period=0.1,  # 10 FPS
+        height=480,
+        width=640,
+        data_types=["rgb", "distance_to_image_plane"],
+        spawn=sim_utils.PinholeCameraCfg(
+            focal_length=24.0, 
+            focus_distance=400.0, 
+            horizontal_aperture=20.955, 
+            clipping_range=(0.1, 2.0)
+        ),
+        offset=CameraCfg.OffsetCfg(
+            pos=(0.13, 0.0, -0.15), 
+            rot=(-0.70614, 0.03701, 0.03701, -0.70614), 
+            convention="ros"
+        ),
+    )
+    camera1 = Camera(cfg=camera1_cfg)
+
+    # Camera 2 - Table view camera (external fixed camera)
+    camera2_cfg = CameraCfg(
+        prim_path="/World/table_cam",
+        update_period=0.1,  # 10 FPS
+        height=480,
+        width=640,
+        data_types=["rgb", "distance_to_image_plane"],
+        spawn=sim_utils.PinholeCameraCfg(
+            focal_length=24.0, 
+            focus_distance=400.0, 
+            horizontal_aperture=20.955, 
+            clipping_range=(0.1, 2.0)
+        ),
+        offset=CameraCfg.OffsetCfg(
+            pos=(2.0, 0.0, 1.6), 
+            # rot=(0.35355, -0.61237, -0.61237, 0.35355),
+            rot = (0.56099, 0.43046, 0.43046, 0.56099),  # Adjusted for better view
+            convention="opengl"
+        ),
+    )
+    camera2 = Camera(cfg=camera2_cfg)
+
+    # Return scene entities
+    scene_entities = {
+        "franka_panda": franka_panda,
+        "sphere": sphere,
+        "camera1": camera1,
+        "camera2": camera2,
+    }
     
-    def animate_robot(self, t):
-        """Animate the robot with sinusoidal motion."""
-        for i in range(len(self.joint_angles)):
-            amplitude = 0.3 if i < 6 else 0.2
-            frequency = 0.5 + i * 0.1
-            offset = [0.0, -0.5, 0.0, -2.0, 0.0, 1.5, 0.7][i]
-            
-            self.target_angles[i] = offset + amplitude * np.sin(frequency * t)
-        
-        # Update MuJoCo simulation
-        if self.mujoco_initialized:
-            for i, angle in enumerate(self.target_angles):
-                if i < len(self.data.qpos):
-                    self.data.qpos[i] = angle
-            
-            mujoco.mj_forward(self.model, self.data)
-            
-            # Update joint angles from MuJoCo
-            self.joint_angles = self.data.qpos[:7].copy()
-        else:
-            self.joint_angles = self.target_angles.copy()
+    return scene_entities, {}
+
+
+def apply_sinusoidal_motion(robot: Articulation, sim_time: float, amplitude: float = 0.3, frequency: float = 0.5):
+    """Apply sinusoidal motion to robot joints."""
+    # Get current joint positions
+    current_joint_pos = robot.data.default_joint_pos.clone()
     
-    def run_mujoco_viewer(self):
-        """Run MuJoCo viewer in separate thread."""
-        if not self.mujoco_initialized:
-            return
-        
-        try:
-            with mujoco.viewer.launch_passive(self.model, self.data) as viewer:
-                viewer.cam.azimuth = 45
-                viewer.cam.elevation = -30
-                viewer.cam.distance = 3
-                
-                start_time = time.time()
-                while self.running and viewer.is_running():
-                    t = time.time() - start_time
-                    
-                    # Update robot animation
-                    self.animate_robot(t)
-                    
-                    # Step simulation
-                    mujoco.mj_step(self.model, self.data)
-                    
-                    # Sync viewer
-                    viewer.sync()
-                    
-                    time.sleep(0.01)  # ~100 FPS
-                    
-        except Exception as e:
-            print(f"MuJoCo viewer error: {e}")
+    # Apply sinusoidal motion to different joints with different phases
+    joint_offsets = torch.zeros_like(current_joint_pos)
     
-    def update_plots(self, frame):
-        """Update matplotlib plots."""
-        # Clear plots
-        self.ax_3d.clear()
-        self.ax_distances.clear()
-        self.ax_top.clear()
-        self.ax_side.clear()
-        
-        # Re-setup plots
-        self.setup_plots()
-        
-        # Get current robot state
-        if self.mujoco_initialized:
-            joint_positions = self.get_mujoco_joint_positions()
-        else:
-            t = frame * 0.1
-            self.animate_robot(t)
-            joint_positions = self.forward_kinematics_simple(self.joint_angles)
-        
-        # Calculate raycast results
-        raycast_results = self.calculate_raycast_results(joint_positions)
-        
-        # Plot obstacles
-        for obstacle in self.obstacles:
-            center = obstacle['center']
-            radius = obstacle['radius']
-            color = obstacle['color']
-            
-            # 3D sphere
-            u = np.linspace(0, 2 * np.pi, 15)
-            v = np.linspace(0, np.pi, 15)
-            x_sphere = center[0] + radius * np.outer(np.cos(u), np.sin(v))
-            y_sphere = center[1] + radius * np.outer(np.sin(u), np.sin(v))
-            z_sphere = center[2] + radius * np.outer(np.ones(np.size(u)), np.cos(v))
-            self.ax_3d.plot_surface(x_sphere, y_sphere, z_sphere, color=color, alpha=0.3)
-            
-            # 2D projections
-            circle_top = plt.Circle((center[0], center[1]), radius, color=color, alpha=0.5)
-            self.ax_top.add_patch(circle_top)
-            
-            circle_side = plt.Circle((center[0], center[2]), radius, color=color, alpha=0.5)
-            self.ax_side.add_patch(circle_side)
-        
-        # Plot robot arm
-        x_coords = joint_positions[:, 0]
-        y_coords = joint_positions[:, 1]
-        z_coords = joint_positions[:, 2]
-        
-        self.ax_3d.plot(x_coords, y_coords, z_coords, 'ko-', linewidth=3, markersize=8)
-        self.ax_top.plot(x_coords, y_coords, 'ko-', linewidth=2, markersize=6)
-        self.ax_side.plot(x_coords, z_coords, 'ko-', linewidth=2, markersize=6)
-        
-        # Plot raycast results
-        joint_numbers = []
-        distances = []
-        colors = []
-        
-        for result in raycast_results:
-            joint_pos = result['joint_pos']
-            hit_pos = result['hit_pos']
-            distance = result['distance']
-            color = result['color']
-            
-            if hit_pos is not None:
-                # 3D raycast line
-                self.ax_3d.plot([joint_pos[0], hit_pos[0]], 
-                               [joint_pos[1], hit_pos[1]], 
-                               [joint_pos[2], hit_pos[2]], 
-                               color=color, linewidth=2, alpha=0.7)
-                
-                self.ax_3d.scatter(hit_pos[0], hit_pos[1], hit_pos[2], 
-                                 color=color, s=50, alpha=0.8)
-                
-                # 2D projections
-                self.ax_top.plot([joint_pos[0], hit_pos[0]], 
-                                [joint_pos[1], hit_pos[1]], 
-                                color=color, linewidth=1, alpha=0.7)
-                
-                self.ax_side.plot([joint_pos[0], hit_pos[0]], 
-                                 [joint_pos[2], hit_pos[2]], 
-                                 color=color, linewidth=1, alpha=0.7)
-            
-            joint_numbers.append(result['joint_id'] + 1)
-            distances.append(distance)
-            colors.append(color)
-        
-        # Distance bar chart
-        if joint_numbers:
-            bars = self.ax_distances.bar(joint_numbers, distances, color=colors, alpha=0.7)
-            
-            for bar, dist in zip(bars, distances):
-                height = bar.get_height()
-                self.ax_distances.text(bar.get_x() + bar.get_width()/2, height + 0.05,
-                                     f'{dist:.2f}m', ha='center', va='bottom', fontsize=8)
-        
-        # Add status text
-        status = "MuJoCo Active" if self.mujoco_initialized else "Matplotlib Only"
-        self.ax_3d.text2D(0.02, 0.98, f'Frame: {frame} | {status}', 
-                         transform=self.ax_3d.transAxes, fontsize=10, verticalalignment='top')
-        
-        # Print distances periodically
-        if frame % 50 == 0:
-            print(f"\nFrame {frame}:")
-            for result in raycast_results:
-                print(f"  Joint {result['joint_id']+1}: {result['distance']:.3f}m")
+    # Joint 1: Shoulder Pan
+    joint_offsets[:, 0] = amplitude * math.sin(2 * math.pi * frequency * sim_time)
     
-    def run_visualization(self, duration=60):
-        """Run the complete visualization."""
-        print("\n=== Starting Franka Raycast Visualization ===")
+    # Joint 2: Shoulder Lift  
+    joint_offsets[:, 1] = amplitude * 0.5 * math.sin(2 * math.pi * frequency * sim_time + math.pi/4)
+    
+    # Joint 3: Elbow
+    joint_offsets[:, 2] = amplitude * 0.7 * math.sin(2 * math.pi * frequency * sim_time + math.pi/2)
+    
+    # Joint 4: Wrist 1
+    joint_offsets[:, 3] = amplitude * 0.4 * math.sin(2 * math.pi * frequency * sim_time + 3*math.pi/4)
+    
+    # Joint 5: Wrist 2
+    joint_offsets[:, 4] = amplitude * 0.3 * math.sin(2 * math.pi * frequency * sim_time + math.pi)
+    
+    # Joint 6: Wrist 3
+    joint_offsets[:, 5] = amplitude * 0.2 * math.sin(2 * math.pi * frequency * sim_time + 5*math.pi/4)
+    
+    # Joint 7: Wrist Rotate
+    joint_offsets[:, 6] = amplitude * 0.1 * math.sin(2 * math.pi * frequency * sim_time + 3*math.pi/2)
+    
+    # Calculate target positions
+    joint_pos_target = current_joint_pos + joint_offsets
+    
+    # Clamp to joint limits
+    joint_pos_target = joint_pos_target.clamp_(
+        robot.data.soft_joint_pos_limits[..., 0], 
+        robot.data.soft_joint_pos_limits[..., 1]
+    )
+    
+    return joint_pos_target
+
+
+def print_robot_data(robot: Articulation, sim_time: float):
+    """Print robot state data."""
+    print(f"\n--- Robot Data at t={sim_time:.2f}s ---")
+    print(f"Joint Positions: {robot.data.joint_pos[0].cpu().numpy()}")
+    print(f"Joint Velocities: {robot.data.joint_vel[0].cpu().numpy()}")
+    print(f"End Effector Position: {robot.data.root_pos_w[0].cpu().numpy()}")
+    print(f"End Effector Orientation: {robot.data.root_quat_w[0].cpu().numpy()}")
+
+
+def print_sphere_data(sphere: RigidObject, sim_time: float):
+    """Print sphere state data (position only since it's kinematic)."""
+    print(f"\n--- Sphere Obstacle Data at t={sim_time:.2f}s ---")
+    print(f"Sphere Position (Fixed): {sphere.data.root_pos_w[0].cpu().numpy()}")
+    print(f"Sphere Orientation (Fixed): {sphere.data.root_quat_w[0].cpu().numpy()}")
+    # Note: Velocities should be zero for kinematic objects
+
+
+def save_camera_data(camera: Camera, camera_name: str, sim_time: float):
+    """Save camera RGB and depth data."""
+    if camera.data.output is not None:
+        if "rgb" in camera.data.output:
+            rgb_data = camera.data.output["rgb"][0].cpu().numpy()  # Get first environment
+            print(f"--- {camera_name} RGB Data at t={sim_time:.2f}s ---")
+            print(f"RGB Image Shape: {rgb_data.shape}")
+            print(f"RGB Image Range: [{rgb_data.min():.3f}, {rgb_data.max():.3f}]")
         
-        if self.mujoco_initialized:
-            print("✓ MuJoCo viewer will open in separate window")
-            print("✓ Matplotlib plots will show raycast analysis")
+        if "distance_to_image_plane" in camera.data.output:
+            depth_data = camera.data.output["distance_to_image_plane"][0].cpu().numpy()
+            print(f"--- {camera_name} Depth Data at t={sim_time:.2f}s ---")
+            print(f"Depth Image Shape: {depth_data.shape}")
+            print(f"Depth Range: [{depth_data.min():.3f}, {depth_data.max():.3f}] meters")
+        
+        # Optional: Save images to file (uncomment if needed)
+        import cv2
+        if "rgb" in camera.data.output:
+            rgb_uint8 = (rgb_data * 255).astype(np.uint8)
+            cv2.imwrite(f"{camera_name}_rgb_t{sim_time:.2f}.png", cv2.cvtColor(rgb_uint8, cv2.COLOR_RGB2BGR))
+        if "distance_to_image_plane" in camera.data.output:
+            depth_normalized = (depth_data / depth_data.max() * 255).astype(np.uint8)
+            cv2.imwrite(f"{camera_name}_depth_t{sim_time:.2f}.png", depth_normalized)
+
+
+def run_simulator(sim: sim_utils.SimulationContext, entities: dict[str, object]):
+    """Runs the simulation loop."""
+    # Define simulation stepping
+    sim_dt = sim.get_physics_dt()
+    sim_time = 0.0
+    count = 0
+    data_capture_interval = 50  # Capture data every 50 steps
+    
+    # Get entities
+    robot = entities["franka_panda"]
+    sphere = entities["sphere"]
+    camera1 = entities["camera1"]
+    camera2 = entities["camera2"]
+    
+    print("[INFO]: Starting sinusoidal motion simulation...")
+    
+    # Simulate physics
+    while simulation_app.is_running():
+        # Reset periodically to prevent drift
+        if count % 1000 == 0:
+            print(f"[INFO]: Resetting robot state at step {count}...")
+            # Reset robot state
+            root_state = robot.data.default_root_state.clone()
+            robot.write_root_pose_to_sim(root_state[:, :7])
+            robot.write_root_velocity_to_sim(root_state[:, 7:])
             
-            # Start MuJoCo viewer in separate thread
-            self.mujoco_thread = threading.Thread(target=self.run_mujoco_viewer)
-            self.mujoco_thread.daemon = True
-            self.mujoco_thread.start()
-        else:
-            print("✓ Running matplotlib visualization only")
-            print("  (Install mujoco to see 3D physics simulation)")
+            # Reset joint positions
+            joint_pos, joint_vel = robot.data.default_joint_pos.clone(), robot.data.default_joint_vel.clone()
+            robot.write_joint_state_to_sim(joint_pos, joint_vel)
+            robot.reset()
+            
+            # Reset sphere to new random position (kinematic object)
+            table_position = (0.55, 0.0, 1.05)
+            new_sphere_position = generate_random_sphere_position(table_position)
+            print(f"[INFO]: Moving sphere obstacle to new random position: {new_sphere_position}")
+            
+            # For kinematic objects, we only need to set position
+            sphere_root_state = sphere.data.default_root_state.clone()
+            sphere_root_state[:, :3] = torch.tensor(new_sphere_position, device=sphere.device).unsqueeze(0)
+            sphere_root_state[:, 3:7] = torch.tensor([1.0, 0.0, 0.0, 0.0], device=sphere.device).unsqueeze(0)  # Reset rotation
+            sphere_root_state[:, 7:] = 0.0  # Zero velocities (should stay zero for kinematic)
+            sphere.write_root_pose_to_sim(sphere_root_state[:, :7])
+            sphere.write_root_velocity_to_sim(sphere_root_state[:, 7:])
+            sphere.reset()
+            
+            # Reset simulation time for motion pattern
+            sim_time = 0.0
         
-        # Setup matplotlib animation
-        fps = 10
-        frames = duration * fps
+        # Apply sinusoidal motion to robot
+        joint_pos_target = apply_sinusoidal_motion(robot, sim_time, amplitude=0.4, frequency=0.3)
+        robot.set_joint_position_target(joint_pos_target)
+        robot.write_data_to_sim()
         
-        anim = FuncAnimation(self.fig, self.update_plots, frames=frames, 
-                           interval=1000//fps, blit=False, repeat=True)
+        # Perform simulation step
+        sim.step()
         
-        plt.tight_layout()
-        plt.show()
+        # Update entities
+        robot.update(sim_dt)
+        sphere.update(sim_dt)
+        camera1.update(sim_dt)
+        camera2.update(sim_dt)
         
-        # Stop MuJoCo viewer
-        self.running = False
-        if self.mujoco_thread:
-            self.mujoco_thread.join(timeout=1)
+        # Capture and print data at intervals
+        if count % data_capture_interval == 0:
+            # Print robot data
+            print_robot_data(robot, sim_time)
+            
+            # Print sphere data
+            print_sphere_data(sphere, sim_time)
+            
+            # Save camera data
+            save_camera_data(camera1, "WristCam", sim_time)
+            save_camera_data(camera2, "TableCam", sim_time)
+            
+            print("-" * 60)
         
-        return anim
+        # Update time and counters
+        sim_time += sim_dt
+        count += 1
+        
+        # Optional: Stop after certain time for testing
+        if sim_time > 30.0:  # Run for 30 seconds
+            print("[INFO]: Simulation complete!")
+            break
+
 
 def main():
     """Main function."""
-    print("=== Franka Raycast Visualization with MuJoCo ===")
-    print("This demonstrates:")
-    print("• MuJoCo physics simulation with 3D robot model")
-    print("• Raycast-based obstacle detection")
-    print("• Real-time distance measurements")
-    print("• Multiple visualization views")
-    print()
+    # Initialize the simulation context
+    sim_cfg = sim_utils.SimulationCfg(device=args_cli.device, dt=1/60.0)  # 60 FPS
+    sim = sim_utils.SimulationContext(sim_cfg)
     
-    if not MUJOCO_AVAILABLE:
-        print("Note: MuJoCo not available. Install with:")
-        print("pip install mujoco")
-        print("Running with matplotlib visualization only.")
-        print()
+    # Set main camera view
+    sim.set_camera_view([3.5, 0.0, 3.2], [0.0, 0.0, 0.5])
     
-    try:
-        visualizer = FrankaRaycastWithMuJoCo()
-        anim = visualizer.run_visualization(duration=60)
-        
-        print("\n=== Visualization Complete ===")
-        if MUJOCO_AVAILABLE:
-            print("✓ MuJoCo physics simulation")
-        print("✓ Raycast obstacle detection")
-        print("✓ Multi-view analysis")
-        print("✓ Real-time distance measurements")
-        
-    except Exception as e:
-        print(f"Error: {e}")
-        import traceback
-        traceback.print_exc()
+    # Design scene
+    scene_entities, _ = design_scene()
+    
+    # Play the simulator
+    sim.reset()
+    
+    # Cameras are now configured with offsets, no need to manually set poses
+    camera1 = scene_entities["camera1"]
+    camera2 = scene_entities["camera2"]
+    
+    print("[INFO]: Setup complete...")
+    print("[INFO]: Franka robot will move in sinusoidal motion")
+    print("[INFO]: Red sphere placed as fixed obstacle on table surface")
+    print("[INFO]: Sphere is kinematic (fixed in place, acts as collision obstacle)")
+    print("[INFO]: Camera1 (Wrist view) and Camera2 (Table view) will capture RGB and depth data")
+    print("[INFO]: Robot and sphere obstacle data will be printed every few steps")
+    print("[INFO]: Sphere obstacle will be repositioned randomly every 1000 simulation steps")
+    
+    # Run the simulator
+    run_simulator(sim, scene_entities)
+
 
 if __name__ == "__main__":
+    # Run the main function
     main()
+    # Close sim app
+    simulation_app.close()
