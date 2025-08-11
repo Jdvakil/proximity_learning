@@ -105,9 +105,10 @@ def design_scene() -> tuple[dict, dict]:
             clipping_range=(0.1, 2.0)
         ),
         offset=CameraCfg.OffsetCfg(
-            pos=(1.0, 0.0, 1.4), 
-            rot=(0.35355, -0.61237, -0.61237, 0.35355), 
-            convention="ros"
+            pos=(2.0, 0.0, 1.6), 
+            # rot=(0.35355, -0.61237, -0.61237, 0.35355),
+            rot = (0.56099, 0.43046, 0.43046, 0.56099),  # Adjusted for better view
+            convention="opengl"
         ),
     )
     camera2 = Camera(cfg=camera2_cfg)
