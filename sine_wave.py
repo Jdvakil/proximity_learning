@@ -190,12 +190,13 @@ def save_camera_data(camera: Camera, camera_name: str, sim_time: float):
         
         # Optional: Save images to file (uncomment if needed)
         import cv2
+        path = "scene_captures"
         if "rgb" in camera.data.output:
             rgb_uint8 = (rgb_data * 255).astype(np.uint8)
-            cv2.imwrite(f"{camera_name}_rgb_t{sim_time:.2f}.png", cv2.cvtColor(rgb_uint8, cv2.COLOR_RGB2BGR))
+            cv2.imwrite(f"{path}/{camera_name}_rgb_t{sim_time:.2f}.png", cv2.cvtColor(rgb_uint8, cv2.COLOR_RGB2BGR))
         if "distance_to_image_plane" in camera.data.output:
             depth_normalized = (depth_data / depth_data.max() * 255).astype(np.uint8)
-            cv2.imwrite(f"{camera_name}_depth_t{sim_time:.2f}.png", depth_normalized)
+            cv2.imwrite(f"{path}/{camera_name}_depth_t{sim_time:.2f}.png", depth_normalized)
 
 
 def run_simulator(sim: sim_utils.SimulationContext, entities: dict[str, object]):
