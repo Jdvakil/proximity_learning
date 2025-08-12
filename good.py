@@ -114,7 +114,11 @@ def design_scene() -> tuple[dict, dict]:
                 max_depenetration_velocity=0.0,
             ),
             mass_props=sim_utils.MassPropertiesCfg(mass=1.0),  # Mass doesn't matter for kinematic
-            collision_props=sim_utils.CollisionPropertiesCfg(
+            collision_props=sim_utils.Col
+    print("[INFO]: Red sphere placed as fixed obstacle on table surface")
+    print("[INFO]: Sphere is kinematic (fixed in place, acts as collision obstacle)")
+    print("[INFO]: Camera1 (Wrist view) and Camera2 (Table view) will capture RGB and depth data")
+    print("[INFO]: Robot and sphere obstacle data will be printed every few steps")lisionPropertiesCfg(
                 collision_enabled=True,  # Enable collision detection
             ),
             visual_material=sim_utils.PreviewSurfaceCfg(
