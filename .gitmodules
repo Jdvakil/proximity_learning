@@ -1,6 +1,3 @@
-[submodule "submodules/robohive"]
-	path = submodules/robohive
-	url = git@github.com:vikashplus/robohive.git
 [submodule "submodules/act"]
 	path = submodules/act
 	url = git@github.com:tonyzhaozh/act.git
