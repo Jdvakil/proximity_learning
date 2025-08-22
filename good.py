@@ -16,7 +16,7 @@ and a randomly placed sphere on the table.
 
 """
 
-"""Launch Isaac Sim Simulator first."""
+""" test if i can push to main Launch Isaac Sim Simulator first."""
 
 import argparse
 import math
