@@ -10,7 +10,7 @@ import numpy as np
 import os
 
 def examine_pickle_data(pickle_file_path):
-    """Load and examine the robot data from a pickle file."""
+    """Load and examine the robot episode data from a pickle file."""
     
     if not os.path.exists(pickle_file_path):
         print(f"Error: File {pickle_file_path} does not exist!")
@@ -30,65 +30,81 @@ def examine_pickle_data(pickle_file_path):
         for key, value in metadata.items():
             print(f"  {key}: {value}")
         
-        # Examine robot data
-        robot_data = data.get('robot_data', [])
-        print(f"\nROBOT DATA:")
+        # Examine episodes
+        episodes = data.get('episodes', [])
+        print(f"\nEPISODES:")
         print("-" * 30)
-        print(f"  Number of samples: {len(robot_data)}")
+        print(f"  Total episodes: {len(episodes)}")
         
-        if robot_data:
-            first_sample = robot_data[0]
-            print(f"  Sample keys: {list(first_sample.keys())}")
-            print(f"  Joint positions shape: {first_sample['joint_positions'].shape}")
-            print(f"  Joint velocities shape: {first_sample['joint_velocities'].shape}")
-            print(f"  End effector position shape: {first_sample['end_effector_position'].shape}")
-            print(f"  Time range: {robot_data[0]['timestamp']:.3f}s to {robot_data[-1]['timestamp']:.3f}s")
+        if episodes:
+            # Show episode structure
+            first_episode = episodes[0]
+            print(f"  Episode keys: {list(first_episode.keys())}")
+            print(f"  Trajectory length: {len(first_episode['trajectory'])}")
+            print(f"  Start joint positions shape: {first_episode['start_joint_positions'].shape}")
+            print(f"  Goal joint positions shape: {first_episode['goal_joint_positions'].shape}")
             
-            # Show some statistics
-            all_joint_pos = np.array([sample['joint_positions'] for sample in robot_data])
-            print(f"  Joint position ranges:")
-            for i in range(all_joint_pos.shape[1]):
-                joint_name = first_sample['joint_names'][i] if i < len(first_sample['joint_names']) else f"joint_{i}"
-                min_val, max_val = all_joint_pos[:, i].min(), all_joint_pos[:, i].max()
-                print(f"    {joint_name}: [{min_val:.4f}, {max_val:.4f}]")
+            # Show success statistics
+            successful_episodes = sum(1 for ep in episodes if ep['episode_metadata']['success'])
+            success_rate = successful_episodes / len(episodes) * 100
+            print(f"  Success rate: {success_rate:.1f}% ({successful_episodes}/{len(episodes)})")
+            
+            # Show a sample episode
+            print(f"\nSAMPLE EPISODE (Episode 0):")
+            print("-" * 30)
+            sample_ep = episodes[0]
+            print(f"  Episode ID: {sample_ep['episode_id']}")
+            print(f"  Start joints: {sample_ep['start_joint_positions'][:7]}")  # First 7 joints
+            print(f"  Goal joints: {sample_ep['goal_joint_positions'][:7]}")   # First 7 joints
+            print(f"  Success: {sample_ep['episode_metadata']['success']}")
+            print(f"  Trajectory steps: {len(sample_ep['trajectory'])}")
+            
+            # Show trajectory statistics
+            if sample_ep['trajectory']:
+                start_pos = sample_ep['trajectory'][0]['joint_positions'][:7]
+                end_pos = sample_ep['trajectory'][-1]['joint_positions'][:7]
+                goal_pos = sample_ep['goal_joint_positions'][:7]
+                
+                final_distance = np.linalg.norm(end_pos - goal_pos)
+                print(f"  Final distance to goal: {final_distance:.4f}")
+                
+                print(f"  Trajectory joint ranges:")
+                all_positions = np.array([step['joint_positions'][:7] for step in sample_ep['trajectory']])
+                for i in range(7):
+                    joint_name = f"joint_{i+1}"
+                    min_val, max_val = all_positions[:, i].min(), all_positions[:, i].max()
+                    print(f"    {joint_name}: [{min_val:.4f}, {max_val:.4f}]")
         
-        # Examine sphere data
-        sphere_data = data.get('sphere_data', [])
-        print(f"\nSPHERE DATA:")
-        print("-" * 30)
-        print(f"  Number of samples: {len(sphere_data)}")
+        # Examine sphere data (if present)
+        if episodes and episodes[0]['sphere_data']:
+            print(f"\nSPHERE DATA:")
+            print("-" * 30)
+            sphere_samples = episodes[0]['sphere_data']
+            print(f"  Sphere samples per episode: {len(sphere_samples)}")
+            if sphere_samples:
+                first_sphere = sphere_samples[0]
+                print(f"  Sphere position: {first_sphere['position']}")
         
-        if sphere_data:
-            print(f"  Sample keys: {list(sphere_data[0].keys())}")
-            positions = np.array([sample['position'] for sample in sphere_data])
-            print(f"  Position range: X[{positions[:, 0].min():.3f}, {positions[:, 0].max():.3f}], "
-                  f"Y[{positions[:, 1].min():.3f}, {positions[:, 1].max():.3f}], "
-                  f"Z[{positions[:, 2].min():.3f}, {positions[:, 2].max():.3f}]")
-        
-        # Examine camera data
-        camera_data = data.get('camera_data', [])
-        print(f"\nCAMERA DATA:")
-        print("-" * 30)
-        print(f"  Number of samples: {len(camera_data)}")
-        
-        if camera_data:
-            cameras = set(sample['camera_name'] for sample in camera_data)
-            print(f"  Cameras: {cameras}")
-            for camera_name in cameras:
-                camera_samples = [s for s in camera_data if s['camera_name'] == camera_name]
-                print(f"  {camera_name}: {len(camera_samples)} samples")
-                if camera_samples:
-                    sample = camera_samples[0]
-                    if 'rgb_shape' in sample:
-                        print(f"    RGB shape: {sample['rgb_shape']}")
-                    if 'depth_shape' in sample:
-                        print(f"    Depth shape: {sample['depth_shape']}")
+        # Examine camera data (if present)
+        if episodes and episodes[0]['camera_data']:
+            print(f"\nCAMERA DATA:")
+            print("-" * 30)
+            camera_samples = episodes[0]['camera_data']
+            print(f"  Camera samples per episode: {len(camera_samples)}")
+            if camera_samples:
+                cameras = set(sample['camera_name'] for sample in camera_samples)
+                print(f"  Cameras: {cameras}")
+                for camera_name in cameras:
+                    camera_data = [s for s in camera_samples if s['camera_name'] == camera_name]
+                    print(f"  {camera_name}: {len(camera_data)} samples per episode")
         
         print("\n" + "=" * 60)
-        print("Data examination complete!")
+        print("Episode data examination complete!")
         
     except Exception as e:
         print(f"Error loading pickle file: {e}")
+        import traceback
+        traceback.print_exc()
 
 def list_data_files(directory="./collected_data"):
     """List all available pickle files in the data directory."""

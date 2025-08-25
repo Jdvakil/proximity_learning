@@ -6,6 +6,7 @@ import random
 import os
 import pickle
 from datetime import datetime
+import cv2  # For video recording
 
 from isaaclab.app import AppLauncher
 
@@ -31,6 +32,37 @@ from isaaclab_assets import FRANKA_PANDA_CFG
 from scene import Scene
 from data_collector import DataCollector
 
+
+def generate_random_joint_position(robot: Articulation, avoid_limits: bool = True):
+    """Generate a random valid joint position for the robot."""
+    if avoid_limits:
+        # Stay well within joint limits for safer motion
+        joint_limits_lower = robot.data.soft_joint_pos_limits[..., 0] * 0.8
+        joint_limits_upper = robot.data.soft_joint_pos_limits[..., 1] * 0.8
+    else:
+        joint_limits_lower = robot.data.soft_joint_pos_limits[..., 0]
+        joint_limits_upper = robot.data.soft_joint_pos_limits[..., 1]
+    
+    # Generate random joint positions within limits
+    random_joints = torch.zeros_like(robot.data.default_joint_pos)
+    for i in range(7):  # First 7 joints (arm only, not fingers)
+        # Generate random value between 0 and 1, then scale to joint limits
+        random_val = torch.rand(1, device=robot.device)
+        random_joints[:, i] = random_val * (joint_limits_upper[:, i] - joint_limits_lower[:, i]) + joint_limits_lower[:, i]
+    
+    # Keep finger joints at default (closed)
+    random_joints[:, 7:] = robot.data.default_joint_pos[:, 7:]
+    
+    return random_joints
+
+def interpolate_joint_trajectory(start_pos: torch.Tensor, goal_pos: torch.Tensor, num_steps: int):
+    """Create a linear interpolation trajectory between start and goal positions."""
+    trajectory = []
+    for step in range(num_steps):
+        alpha = step / (num_steps - 1)  # Linear interpolation factor
+        interpolated_pos = (1 - alpha) * start_pos + alpha * goal_pos
+        trajectory.append(interpolated_pos)
+    return trajectory
 
 def apply_sinusoidal_motion(robot: Articulation, sim_time: float, amplitude: float = 0.3, frequency: float = 0.5):
     """Apply sinusoidal motion to robot joints."""
@@ -126,106 +158,163 @@ def save_camera_data(camera: Camera, camera_name: str, sim_time: float, data_col
         data_collector.collect_camera_data(camera, camera_name, sim_time, step_count)
 
 def run_simulator(sim: sim_utils.SimulationContext, entities: dict[str, object]):
-    """Runs the simulation loop."""
-    # Define simulation stepping
+    """Runs the simulation loop with start-to-goal motion episodes."""
+    # Define simulation parameters
     sim_dt = sim.get_physics_dt()
-    sim_time = 0.0
-    count = 0
-    data_capture_interval = 50  # Capture data every 50 steps
+    episode_length = 50  # Number of steps per episode
+    max_episodes = 200   # Total number of episodes to collect
     
     # Get entities
     robot = entities["franka_panda"]
     sphere = entities["sphere"]
-    camera1 = entities["camera1"]
-    camera2 = entities["camera2"]
+    cameras = {"camera1": entities["camera1"], "camera2": entities["camera2"]}
     
-    # Initialize data collector for pickle files
+    # Initialize data collector for episode-based data collection
     data_collector = DataCollector()
-    data_collector.set_metadata(data_capture_interval, sim_dt)
+    data_collector.set_metadata(episode_length, sim_dt)
     
-    print("[INFO]: Starting sinusoidal motion simulation...")
+    print("[INFO]: Starting start-to-goal motion data collection...")
+    print(f"[INFO]: Episodes: {max_episodes}, Steps per episode: {episode_length}")
     print(f"[INFO]: Data will be saved to pickle files in: {data_collector.data_dir}")
     
-    # Simulate physics
-    while simulation_app.is_running():
-        # Reset periodically to prevent drift
-        if count % 1000 == 0:
-            print(f"[INFO]: Resetting robot state at step {count}...")
-            # Reset robot state
-            root_state = robot.data.default_root_state.clone()
-            robot.write_root_pose_to_sim(root_state[:, :7])
-            robot.write_root_velocity_to_sim(root_state[:, 7:])
-            
-            # Reset joint positions
-            joint_pos, joint_vel = robot.data.default_joint_pos.clone(), robot.data.default_joint_vel.clone()
-            robot.write_joint_state_to_sim(joint_pos, joint_vel)
-            robot.reset()
-            
-            # Reset sphere to new random position (kinematic object)
-            table_position = (0.55, 0.0, 1.05)
-            scene = Scene()
-            new_sphere_position = scene.generate_random_sphere_position(table_position)
-            print(f"[INFO]: Moving sphere obstacle to new random position: {new_sphere_position}")
-            
-            # For kinematic objects, we only need to set position
-            sphere_root_state = sphere.data.default_root_state.clone()
-            sphere_root_state[:, :3] = torch.tensor(new_sphere_position, device=sphere.device).unsqueeze(0)
-            sphere_root_state[:, 3:7] = torch.tensor([1.0, 0.0, 0.0, 0.0], device=sphere.device).unsqueeze(0)  # Reset rotation
-            sphere_root_state[:, 7:] = 0.0  # Zero velocities (should stay zero for kinematic)
-            sphere.write_root_pose_to_sim(sphere_root_state[:, :7])
-            sphere.write_root_velocity_to_sim(sphere_root_state[:, 7:])
-            sphere.reset()
-            
-            # Reset simulation time for motion pattern
-            sim_time = 0.0
+    # Create directory for video captures
+    video_dir = "./scene_captures"
+    os.makedirs(video_dir, exist_ok=True)
+    
+    episode_id = 0
+    
+    while simulation_app.is_running() and episode_id < max_episodes:
+        # Generate start and goal positions for this episode
+        start_joint_pos = generate_random_joint_position(robot, avoid_limits=True)
+        goal_joint_pos = generate_random_joint_position(robot, avoid_limits=True)
         
-        # Apply sinusoidal motion to robot
-        joint_pos_target = apply_sinusoidal_motion(robot, sim_time, amplitude=0.4, frequency=0.3)
-        robot.set_joint_position_target(joint_pos_target)
-        robot.write_data_to_sim()
+        # Generate trajectory from start to goal
+        trajectory = interpolate_joint_trajectory(start_joint_pos, goal_joint_pos, episode_length)
         
-        # Perform simulation step
-        sim.step()
+        # Reset robot to start position
+        robot.write_joint_state_to_sim(start_joint_pos, torch.zeros_like(start_joint_pos))
+        robot.reset()
         
-        # Update entities
-        robot.update(sim_dt)
-        sphere.update(sim_dt)
-        camera1.update(sim_dt)
-        camera2.update(sim_dt)
+        # Reset sphere to new random position for this episode
+        table_position = (0.55, 0.0, 1.05)
+        scene = Scene()
+        new_sphere_position = scene.generate_random_sphere_position(table_position)
         
-        # Capture and print data at intervals
-        if count % data_capture_interval == 0:
-            # Print robot data and collect for pickle files
-            print_robot_data(robot, sim_time, data_collector, count)
-            
-            # Print sphere data and collect for pickle files
-            print_sphere_data(sphere, sim_time, data_collector, count)
-            
-            # Save camera data and collect metadata for pickle files
-            save_camera_data(camera1, "WristCam", sim_time, data_collector, count)
-            save_camera_data(camera2, "TableCam", sim_time, data_collector, count)
-            
-            # Periodically save data to prevent memory issues
-            saved_file = data_collector.save_periodic("robot_data_checkpoint", max_samples=200)
-            if saved_file:
-                print(f"[INFO]: Saved checkpoint data to {saved_file}")
-            
-            print("-" * 60)
+        sphere_root_state = sphere.data.default_root_state.clone()
+        sphere_root_state[:, :3] = torch.tensor(new_sphere_position, device=sphere.device).unsqueeze(0)
+        sphere_root_state[:, 3:7] = torch.tensor([1.0, 0.0, 0.0, 0.0], device=sphere.device).unsqueeze(0)
+        sphere_root_state[:, 7:] = 0.0
+        sphere.write_root_pose_to_sim(sphere_root_state[:, :7])
+        sphere.write_root_velocity_to_sim(sphere_root_state[:, 7:])
+        sphere.reset()
         
-        # Update time and counters
-        sim_time += sim_dt
-        count += 1
+        # Start new episode in data collector
+        data_collector.start_new_episode(episode_id, start_joint_pos, goal_joint_pos)
         
-        # Optional: Stop after certain time for testing
-        if sim_time > 5.0:  # Run for 30 seconds
-            print("[INFO]: Simulation complete!")
+        print(f"\n[INFO]: Starting Episode {episode_id + 1}/{max_episodes}")
+        print(f"[INFO]: Start joints: {start_joint_pos[0, :7].cpu().numpy()}")
+        print(f"[INFO]: Goal joints: {goal_joint_pos[0, :7].cpu().numpy()}")
+        print(f"[INFO]: Sphere position: {new_sphere_position}")
+        
+        # Initialize video recording for this episode
+        video_filename = os.path.join(video_dir, f"episode_{episode_id:04d}_tablecam.mp4")
+        video_writer = None
+        video_frames = []
+        
+        # Execute the trajectory for this episode
+        episode_sim_time = 0.0
+        for step_in_episode in range(episode_length):
+            # Set target joint position from trajectory
+            target_joint_pos = trajectory[step_in_episode]
+            robot.set_joint_position_target(target_joint_pos)
+            robot.write_data_to_sim()
             
-            # Save final data to pickle file
-            final_file = data_collector.save_data("robot_data_final")
-            print(f"[INFO]: Final data saved to {final_file}")
-            print(f"[INFO]: Total samples collected: {len(data_collector.data['robot_data'])}")
+            # Perform simulation step
+            sim.step()
             
-            break
+            # Update entities
+            robot.update(sim_dt)
+            sphere.update(sim_dt)
+            for camera in cameras.values():
+                camera.update(sim_dt)
+            
+            # Capture frame from table camera for video
+            table_camera = cameras["camera2"]  # camera2 is the table camera
+            if table_camera.data.output is not None and "rgb" in table_camera.data.output:
+                rgb_data = table_camera.data.output["rgb"][0].cpu().numpy()
+                # Convert from [0,1] float to [0,255] uint8 and from RGB to BGR for OpenCV
+                frame_bgr = cv2.cvtColor((rgb_data * 255).astype(np.uint8), cv2.COLOR_RGB2BGR)
+                video_frames.append(frame_bgr)
+                
+                # Initialize video writer on first frame
+                if video_writer is None:
+                    height, width, _ = frame_bgr.shape
+                    fourcc = cv2.VideoWriter_fourcc(*'mp4v')
+                    # Record at ~30 FPS (assuming sim runs at 60 FPS, we capture every frame)
+                    fps = 30.0
+                    video_writer = cv2.VideoWriter(video_filename, fourcc, fps, (width, height))
+            
+            # Collect data for this step
+            data_collector.collect_step_data(robot, sphere, cameras, episode_sim_time, step_in_episode)
+            
+            # Optional: Print progress
+            if step_in_episode % 10 == 0:
+                current_joint_pos = robot.data.joint_pos[0, :7].cpu().numpy()
+                goal_joint_pos_np = goal_joint_pos[0, :7].cpu().numpy()
+                distance_to_goal = np.linalg.norm(current_joint_pos - goal_joint_pos_np)
+                print(f"  Step {step_in_episode}/{episode_length}: Distance to goal: {distance_to_goal:.4f}")
+            
+            episode_sim_time += sim_dt
+        
+        # Check if episode was successful (close to goal)
+        final_joint_pos = robot.data.joint_pos[0, :7].cpu().numpy()
+        goal_joint_pos_np = goal_joint_pos[0, :7].cpu().numpy()
+        final_distance = np.linalg.norm(final_joint_pos - goal_joint_pos_np)
+        success = final_distance < 0.1  # Success threshold
+        
+        # Save video for this episode
+        if video_writer is not None and len(video_frames) > 0:
+            # Write all frames to video
+            for frame in video_frames:
+                video_writer.write(frame)
+            video_writer.release()
+            print(f"[INFO]: Saved episode video: {video_filename}")
+        elif len(video_frames) > 0:
+            # Fallback: save using cv2 directly if video writer failed
+            try:
+                height, width, _ = video_frames[0].shape
+                fourcc = cv2.VideoWriter_fourcc(*'mp4v')
+                fps = 30.0
+                video_writer_fallback = cv2.VideoWriter(video_filename, fourcc, fps, (width, height))
+                for frame in video_frames:
+                    video_writer_fallback.write(frame)
+                video_writer_fallback.release()
+                print(f"[INFO]: Saved episode video (fallback): {video_filename}")
+            except Exception as e:
+                print(f"[WARNING]: Failed to save video for episode {episode_id}: {e}")
+        
+        # Finish episode
+        data_collector.finish_episode(success=success)
+        print(f"[INFO]: Episode {episode_id + 1} completed. Success: {success}, Final distance: {final_distance:.4f}")
+        
+        # Save periodic checkpoints
+        saved_file = data_collector.save_periodic("robot_episodes_checkpoint", max_episodes=50)
+        if saved_file:
+            print(f"[INFO]: Saved checkpoint with {len(data_collector.data['episodes'])} episodes to {saved_file}")
+        
+        episode_id += 1
+    
+    # Save final data
+    final_file = data_collector.save_data("robot_episodes_final")
+    print(f"\n[INFO]: Data collection complete!")
+    print(f"[INFO]: Total episodes collected: {len(data_collector.data['episodes'])}")
+    print(f"[INFO]: Final data saved to: {final_file}")
+    
+    # Calculate success rate
+    successful_episodes = sum(1 for ep in data_collector.data['episodes'] if ep['episode_metadata']['success'])
+    success_rate = successful_episodes / len(data_collector.data['episodes']) * 100
+    print(f"[INFO]: Success rate: {success_rate:.1f}% ({successful_episodes}/{len(data_collector.data['episodes'])})")
+
 
 def main():
     print("[INFO]: Starting main function...")
