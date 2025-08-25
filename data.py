@@ -33,6 +33,32 @@ from scene import Scene
 from data_collector import DataCollector
 
 
+def get_static_joint_positions(robot: Articulation):
+    """Get predefined static start and goal joint positions."""
+    # Define a safe start position (slightly bent arm configuration)
+    start_joint_pos = torch.zeros_like(robot.data.default_joint_pos)
+    start_joint_pos[:, 0] = -0.13935425877571106      # Shoulder pan
+    start_joint_pos[:, 1] = -0.020481698215007782   # Shoulder lift
+    start_joint_pos[:, 2] = -0.05201413854956627     # Elbow
+    start_joint_pos[:, 3] = -2.0691256523132324     # Elbow flex
+    start_joint_pos[:, 4] = 0.05058913677930832      # Wrist 1
+    start_joint_pos[:, 5] = 2.0028650760650635      # Wrist 2
+    start_joint_pos[:, 6] = -0.9167874455451965      # Wrist 3
+    start_joint_pos[:, 7:] = robot.data.default_joint_pos[:, 7:]  # Keep fingers default
+    
+    # Define a different goal position (extended arm configuration)
+    goal_joint_pos = torch.zeros_like(robot.data.default_joint_pos)
+    goal_joint_pos[:, 0] = 1.2       # Shoulder pan
+    goal_joint_pos[:, 1] = -0.2      # Shoulder lift
+    goal_joint_pos[:, 2] = -0.8      # Elbow
+    goal_joint_pos[:, 3] = -1.5      # Elbow flex
+    goal_joint_pos[:, 4] = 0.5       # Wrist 1
+    goal_joint_pos[:, 5] = 1.0       # Wrist 2
+    goal_joint_pos[:, 6] = -0.5      # Wrist 3
+    goal_joint_pos[:, 7:] = robot.data.default_joint_pos[:, 7:]  # Keep fingers default
+    
+    return start_joint_pos, goal_joint_pos
+
 def generate_random_joint_position(robot: Articulation, avoid_limits: bool = True):
     """Generate a random valid joint position for the robot."""
     if avoid_limits:
@@ -161,7 +187,7 @@ def run_simulator(sim: sim_utils.SimulationContext, entities: dict[str, object])
     """Runs the simulation loop with start-to-goal motion episodes."""
     # Define simulation parameters
     sim_dt = sim.get_physics_dt()
-    episode_length = 50  # Number of steps per episode
+    episode_length = 2000  # Number of steps per episode (increased from 50)
     max_episodes = 200   # Total number of episodes to collect
     
     # Get entities
@@ -183,10 +209,16 @@ def run_simulator(sim: sim_utils.SimulationContext, entities: dict[str, object])
     
     episode_id = 0
     
+    # Get static start and goal positions (same for all episodes)
+    static_start_pos, static_goal_pos = get_static_joint_positions(robot)
+    print(f"[INFO]: Using static positions for all episodes:")
+    print(f"[INFO]: Static start joints: {static_start_pos[0, :7].cpu().numpy()}")
+    print(f"[INFO]: Static goal joints: {static_goal_pos[0, :7].cpu().numpy()}")
+    
     while simulation_app.is_running() and episode_id < max_episodes:
-        # Generate start and goal positions for this episode
-        start_joint_pos = generate_random_joint_position(robot, avoid_limits=True)
-        goal_joint_pos = generate_random_joint_position(robot, avoid_limits=True)
+        # Use the same static start and goal positions for all episodes
+        start_joint_pos = static_start_pos.clone()
+        goal_joint_pos = static_goal_pos.clone()
         
         # Generate trajectory from start to goal
         trajectory = interpolate_joint_trajectory(start_joint_pos, goal_joint_pos, episode_length)
@@ -258,7 +290,7 @@ def run_simulator(sim: sim_utils.SimulationContext, entities: dict[str, object])
             data_collector.collect_step_data(robot, sphere, cameras, episode_sim_time, step_in_episode)
             
             # Optional: Print progress
-            if step_in_episode % 10 == 0:
+            if step_in_episode % 25 == 0:  # Print every 25 steps for 200-step episodes
                 current_joint_pos = robot.data.joint_pos[0, :7].cpu().numpy()
                 goal_joint_pos_np = goal_joint_pos[0, :7].cpu().numpy()
                 distance_to_goal = np.linalg.norm(current_joint_pos - goal_joint_pos_np)
