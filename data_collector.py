@@ -16,10 +16,13 @@ class DataCollector:
                 'start_time': datetime.now().isoformat(),
                 'episode_length': None,
                 'sim_dt': None,
-                'total_episodes': 0
+                'total_episodes': 0,
+                'successful_episodes': 0
             }
         }
         self.current_episode = None
+        self.total_episodes_processed = 0  # Track total across all saves
+        self.total_successful_episodes = 0  # Track successful across all saves
         self.data_dir = "./collected_data"
         os.makedirs(self.data_dir, exist_ok=True)
     
@@ -98,6 +101,12 @@ class DataCollector:
         self.data['episodes'].append(self.current_episode)
         self.data['metadata']['total_episodes'] += 1
         
+        # Track totals across all saves
+        self.total_episodes_processed += 1
+        if success:
+            self.total_successful_episodes += 1
+            self.data['metadata']['successful_episodes'] += 1
+        
         self.current_episode = None
     
     def set_metadata(self, episode_length: int, sim_dt: float):
@@ -173,11 +182,25 @@ class DataCollector:
         """Save data periodically and reset buffer to prevent memory issues."""
         if len(self.data['episodes']) >= max_episodes:
             filepath = self.save_data(filename_prefix)
-            # Reset data but keep metadata
+            # Reset data but keep metadata and totals
             metadata_backup = self.data['metadata'].copy()
+            metadata_backup['total_episodes'] = 0  # Reset count for this batch
+            metadata_backup['successful_episodes'] = 0  # Reset count for this batch
             self.data = {
                 'episodes': [],
                 'metadata': metadata_backup
             }
             return filepath
         return None
+    
+    def get_total_stats(self):
+        """Get total statistics across all episodes processed."""
+        success_rate = 0.0
+        if self.total_episodes_processed > 0:
+            success_rate = (self.total_successful_episodes / self.total_episodes_processed) * 100
+        
+        return {
+            'total_episodes': self.total_episodes_processed,
+            'successful_episodes': self.total_successful_episodes,
+            'success_rate': success_rate
+        }

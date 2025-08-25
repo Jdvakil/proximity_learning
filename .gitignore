@@ -6,3 +6,4 @@ __pycache__/
 .vs/
 *.pkl
 *.png
+*.mp4

@@ -338,14 +338,18 @@ def run_simulator(sim: sim_utils.SimulationContext, entities: dict[str, object])
     
     # Save final data
     final_file = data_collector.save_data("robot_episodes_final")
+    
+    # Get comprehensive statistics
+    stats = data_collector.get_total_stats()
+    
     print(f"\n[INFO]: Data collection complete!")
-    print(f"[INFO]: Total episodes collected: {len(data_collector.data['episodes'])}")
+    print(f"[INFO]: Total episodes processed: {stats['total_episodes']}")
+    print(f"[INFO]: Successful episodes: {stats['successful_episodes']}")
+    print(f"[INFO]: Success rate: {stats['success_rate']:.1f}%")
     print(f"[INFO]: Final data saved to: {final_file}")
     
-    # Calculate success rate
-    successful_episodes = sum(1 for ep in data_collector.data['episodes'] if ep['episode_metadata']['success'])
-    success_rate = successful_episodes / len(data_collector.data['episodes']) * 100
-    print(f"[INFO]: Success rate: {success_rate:.1f}% ({successful_episodes}/{len(data_collector.data['episodes'])})")
+    if len(data_collector.data['episodes']) > 0:
+        print(f"[INFO]: Final batch contains: {len(data_collector.data['episodes'])} episodes")
 
 
 def main():
