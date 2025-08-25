@@ -4,3 +4,5 @@ __pycache__/
 .eggs/
 .vscode/
 .vs/
+*.pkl
+*.png
